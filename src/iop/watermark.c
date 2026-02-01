@@ -102,6 +102,10 @@ typedef struct dt_iop_watermark_params_t
   dt_iop_watermark_img_scale_t scale_img; // $DEFAULT: DT_SCALE_IMG_LARGER $DESCRIPTION: "scale marker to"
   dt_iop_watermark_svg_scale_t scale_svg; // $DEFAULT: DT_SCALE_SVG_WIDTH $DESCRIPTION: "scale marker reference"
   char filename[DT_MAX_FILENAME_LEN];
+  /** Tiling **/
+  gboolean tiling; // $DEFAULT: FALSE $DESCRIPTION: "tiling"
+  float xmargin; // $MIN: -1.0 $MAX: 1.0, 0.001 $DEFAULT 0.0 $DESCRIPTION "x margin"
+  float ymargin; // $MIN: -1.0 $MAX: 1.0, 0.001 $DEFAULT 0.0 $DESCRIPTION "y margin"
   /* simple text */
   char text[512];
   /* text color */
@@ -122,6 +126,9 @@ typedef struct dt_iop_watermark_data_t
   dt_iop_watermark_svg_scale_t scale_svg;
   dt_iop_watermark_img_scale_t scale_img;
   char filename[DT_MAX_FILENAME_LEN];
+  gboolean tiling;
+  float xmargin;
+  float ymargin;
   char text[512];
   float color[3];
   char font[64];
@@ -142,6 +149,7 @@ typedef struct dt_iop_watermark_gui_data_t
   GtkWidget *colorpick;
   GtkWidget *fontsel;
   GtkWidget *color_picker_button;
+  GtkWidget *tiling, *xmargin, *ymargin;
 } dt_iop_watermark_gui_data_t;
 
 // option selection from module version 2 through 5
@@ -1030,7 +1038,7 @@ void process(dt_iop_module_t *self,
   cairo_rotate(cr, angle);
   cairo_translate(cr, -cX, -cY);
 
-  // now set proper scale and translationfor the watermark itself
+  // now set proper scale and translation for the watermark itself
   cairo_translate(cr_two, svg_offset_x, svg_offset_y);
 
   switch(type)
@@ -1046,8 +1054,37 @@ void process(dt_iop_module_t *self,
   }
   cairo_surface_flush(surface_two);
 
+  cairo_translate(cr, -svg_offset_x, -svg_offset_y);
+
   // paint the watermark
-  cairo_set_source_surface(cr, surface_two, -svg_offset_x, -svg_offset_y);
+  cairo_pattern_t *pattern = NULL;
+  if(data->tiling)
+  {
+    pattern = cairo_pattern_create_for_surface(surface_two);
+    if((cairo_pattern_status(pattern) != CAIRO_STATUS_SUCCESS) || (pattern == NULL))
+    {
+      dt_print(DT_DEBUG_ALWAYS, "[watermark] cairo pattern error: %s",
+               cairo_status_to_string(cairo_pattern_status(pattern)));
+      cairo_surface_destroy(surface);
+      cairo_surface_destroy(surface_two);
+      g_object_unref(svg);
+      g_free(image);
+      g_free(image_two);
+      cairo_destroy(cr);
+      cairo_destroy(cr_two);
+      dt_iop_image_copy_by_size(ovoid, ivoid, roi_out->width, roi_out->height, ch);
+      dt_pthread_mutex_unlock(&darktable.plugin_threadsafe);
+      return;
+    }
+
+    cairo_pattern_set_extend(pattern, CAIRO_EXTEND_REPEAT);
+    cairo_set_source(cr, pattern);
+  }
+  else
+  {
+    cairo_set_source_surface(cr, surface_two, 0, 0);
+  }
+
   cairo_paint(cr);
 
   // no more non-thread safe rsvg usage
@@ -1079,6 +1116,7 @@ void process(dt_iop_module_t *self,
   /* clean up */
   cairo_surface_destroy(surface);
   cairo_surface_destroy(surface_two);
+  cairo_pattern_destroy(pattern);
   g_free(image);
   if(type == DT_WTM_SVG)
   {
@@ -1294,6 +1332,9 @@ void commit_params(dt_iop_module_t *self,
   d->scale_base = p->scale_base;
   d->scale_img = p->scale_img;
   d->scale_svg = p->scale_svg;
+  d->tiling = p->tiling;
+  d->xmargin = p->xmargin;
+  d->ymargin = p->ymargin;
   memset(d->filename, 0, sizeof(d->filename));
   g_strlcpy(d->filename, p->filename, sizeof(d->filename));
   memset(d->text, 0, sizeof(d->text));
@@ -1350,6 +1391,8 @@ void gui_update(dt_iop_module_t *self)
     gtk_widget_set_visible(GTK_WIDGET(g->scale_img), FALSE);
     gtk_widget_set_visible(GTK_WIDGET(g->scale_svg), FALSE);
   }
+
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->tiling), p->tiling);
 }
 
 void gui_changed(dt_iop_module_t *self,
@@ -1526,10 +1569,19 @@ void gui_init(dt_iop_module_t *self)
   g->y_offset = dt_bauhaus_slider_from_params(self, "yoffset");
   dt_bauhaus_slider_set_digits(g->y_offset, 3);
 
+  // Tiling
+  dt_gui_box_add(self->widget, dt_ui_section_label_new(C_("section", "tiling")));
+  g->tiling = dt_bauhaus_toggle_from_params(self, "tiling");
+  g->xmargin = dt_bauhaus_slider_from_params(self, "xmargin");
+  dt_bauhaus_slider_set_digits(g->xmargin, 3);
+  g->ymargin = dt_bauhaus_slider_from_params(self, "ymargin");
+  dt_bauhaus_slider_set_digits(g->ymargin, 3);
+
   // Let's add some tooltips and hook up some signals...
   gtk_widget_set_tooltip_text(g->opacity, _("the opacity of the watermark"));
   gtk_widget_set_tooltip_text(g->scale, _("the scale of the watermark"));
   gtk_widget_set_tooltip_text(g->rotate, _("the rotation of the watermark"));
+  gtk_widget_set_tooltip_text(g->tiling, _("enable to have the watermark repeat"));
 
   _refresh_watermarks(self);
 
